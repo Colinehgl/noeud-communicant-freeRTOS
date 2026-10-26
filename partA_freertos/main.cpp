@@ -1,125 +1,155 @@
 #include "FreeRTOS.h"
+#include "console.hpp"
+#include "exp_priority_inversion.hpp"
 #include "qemu_uart.hpp"
 #include "rtos.hpp"
-#include "semphr.h"
 #include "task.h"
 
 // ---------------------------------------------------------------------------
-// Console : l'UART est partagée entre plusieurs tâches. 
-// Un mutex garantit qu'une ligne est écrite en entier par une seule tâche.
+// Le message qui circule dans les queues. Trivial (que des entiers) : copiable
+// octet par octet par FreeRTOS. value est en dixièmes de degré (250 = 25,0 °C).
 // ---------------------------------------------------------------------------
-class Console {
+struct Sample {
+    uint32_t tick;
+    int16_t  value;
+};
+
+using SampleQueue = Queue<Sample, 8>;
+
+// Moyenne glissante sur 4 mesures (lisse le bruit). Pas d'allocation.
+class MovingAverage {
 public:
-    explicit Console(Uart& u) : uart_(u) {}
-
-    void init() { mutex_ = xSemaphoreCreateMutexStatic(&mutexBuf_); }
-
-    // Écrit "<label><valeur>\r\n" d'un seul bloc.
-    void line(const char* label, uint32_t value) {
-        char digits[11];
-        toDecimal(value, digits);
-
-        xSemaphoreTake(mutex_, portMAX_DELAY);
-        uart_.puts(label);
-        uart_.puts(digits);
-        uart_.puts("\r\n");
-        xSemaphoreGive(mutex_);
+    int16_t push(int16_t v) {
+        sum_ += v - buf_[idx_];  // on retire la plus ancienne, on ajoute la nouvelle
+        buf_[idx_] = v;
+        idx_       = (idx_ + 1U) % kWindow;
+        if (count_ < kWindow) {
+            ++count_;  // pendant le remplissage, on moyenne ce qu'on a
+        }
+        return static_cast<int16_t>(sum_ / static_cast<int32_t>(count_));
     }
 
 private:
-    static void toDecimal(uint32_t v, char* out) {  // out : au moins 11 octets
-        char tmp[10];
-        unsigned n = 0;
-        do {
-            tmp[n++] = static_cast<char>('0' + v % 10U);
-            v /= 10U;
-        } while (v != 0U);
-        unsigned i = 0;
-        while (n > 0) {
-            out[i++] = tmp[--n];
-        }
-        out[i] = '\0';
-    }
-
-    Uart&             uart_;
-    SemaphoreHandle_t mutex_ = nullptr;
-    StaticSemaphore_t mutexBuf_;
+    static constexpr uint32_t kWindow = 4;
+    int16_t                   buf_[kWindow] = {};
+    int32_t                   sum_          = 0;
+    uint32_t                  idx_          = 0;
+    uint32_t                  count_        = 0;
 };
 
 // ---------------------------------------------------------------------------
-// HighTask (priorité 3) : se réveille exactement toutes les 500 ms.
-// xTaskDelayUntil fixe l'instant du réveil (pas la durée de l'attente), donc
-// les ticks affichés doivent être des multiples de 500 même si d'autres
-// tâches calculent en continu : c'est la preuve de la préemption.
+// AcquisitionTask (priorité 3) : "lit" un capteur simulé toutes les 100 ms.
+// Elle ne doit JAMAIS bloquer sur la queue (sinon la période serait faussée) :
+// send avec wait = 0, et si la file est pleine on compte la mesure perdue.
 // ---------------------------------------------------------------------------
-class HighTask final : public StaticTaskBase<256> {
+class AcquisitionTask final : public StaticTaskBase<256> {
 public:
-    explicit HighTask(Console& c) : console_(c) {}
+    AcquisitionTask(SampleQueue& out, Console& c) : out_(out), console_(c) {}
 
 private:
     [[noreturn]] void run() override {
         TickType_t last = xTaskGetTickCount();
         for (;;) {
-            (void)xTaskDelayUntil(&last, pdMS_TO_TICKS(500));
-            console_.line("[H] tick=", xTaskGetTickCount());
+            const Sample s{xTaskGetTickCount(), readSensor()};
+            if (!out_.send(s, 0)) {
+                ++dropped_;
+                console_.line("[A] perdues=", dropped_);
+            }
+            (void)xTaskDelayUntil(&last, pdMS_TO_TICKS(100));
         }
     }
 
-    Console& console_;
+    // Capteur simulé : 25,0 °C plus un bruit pseudo-aléatoire de -0,5 à +0,5 °C.
+    int16_t readSensor() {
+        seed_       = seed_ * 1664525U + 1013904223U;  // générateur congruentiel linéaire
+        const int n = static_cast<int>((seed_ >> 24) % 11U) - 5;
+        return static_cast<int16_t>(250 + n);
+    }
+
+    SampleQueue& out_;
+    Console&     console_;
+    uint32_t     seed_    = 12345U;
+    uint32_t     dropped_ = 0;
 };
 
 // ---------------------------------------------------------------------------
-// WorkerTask (priorité 2) : ne se bloque jamais, compte en boucle et affiche
-// son compteur toutes les secondes. Deux workers de même priorité se partagent
-// le processeur à chaque tick (time slicing) : leurs compteurs doivent être
-// du même ordre de grandeur.
+// ProcessingTask (priorité 2) : filtre chaque mesure reçue, puis la transmet.
+// Elle attend sans limite (portMAX_DELAY) : Bloquée, donc 0 % de processeur
+// tant qu'aucune mesure n'arrive.
 // ---------------------------------------------------------------------------
-class WorkerTask final : public StaticTaskBase<256> {
+class ProcessingTask final : public StaticTaskBase<256> {
 public:
-    WorkerTask(Console& c, const char* label, const char* sliceLabel)
-        : console_(c), label_(label), sliceLabel_(sliceLabel) {}
+    ProcessingTask(SampleQueue& in, SampleQueue& out) : in_(in), out_(out) {}
 
 private:
     [[noreturn]] void run() override {
-        volatile uint32_t counter  = 0;
-        uint32_t          slices   = 0;
-        TickType_t        lastSeen = xTaskGetTickCount();
-        TickType_t        next     = pdMS_TO_TICKS(1000);
+        MovingAverage avg;
         for (;;) {
-            counter = counter + 1U;
-            const TickType_t now = xTaskGetTickCount();
-            if (now != lastSeen) {
-                lastSeen = now;
-                ++slices;
-            }
-            if (now >= next) {
-                console_.line(label_, counter);
-                console_.line(sliceLabel_, slices);
-                next += pdMS_TO_TICKS(1000);
+            Sample s{};
+            if (in_.receive(s)) {
+                s.value = avg.push(s.value);
+                (void)out_.send(s);  // bloque si la sortie est pleine : régulation du flux
             }
         }
     }
 
-    Console&    console_;
-    const char* label_;
-    const char* sliceLabel_;
+    SampleQueue& in_;
+    SampleQueue& out_;
+};
+
+// ---------------------------------------------------------------------------
+// CommunicationTask (priorité 1) : affiche les mesures filtrées sur l'UART.
+// (Plus tard : elle les mettra en trames avec CRC, étape A7.)
+// ---------------------------------------------------------------------------
+class CommunicationTask final : public StaticTaskBase<256> {
+public:
+    CommunicationTask(SampleQueue& in, Console& c) : in_(in), console_(c) {}
+
+private:
+    [[noreturn]] void run() override {
+        for (;;) {
+            Sample s{};
+            if (in_.receive(s)) {
+                console_.line("[C] t=", s.tick);
+                console_.line("[C] v=", static_cast<uint32_t>(s.value));  // valeurs > 0 ici
+                // EXPÉRIENCE (voir explication) : décommente pour ralentir le consommateur.
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+        }
+    }
+
+    SampleQueue& in_;
+    Console&     console_;
 };
 
 int main() {
     // static : ces objets doivent survivre au démarrage de l'ordonnanceur.
-    static QemuUart   uart;
-    static Console    console{uart};
-    static HighTask   high{console};
-    static WorkerTask workerA{console, "[A] n=", "[A] slices="};
-    static WorkerTask workerB{console, "[B] n=", "[B] slices="};
+    static QemuUart uart;
+    static Console  console{uart};  // son Mutex est créé ici, avant l'ordonnanceur
 
     uart.init();
-    console.init();
-    uart.puts("A3 : priorites et preemption\r\n");
 
-    high.start("high", 3);
-    workerB.start("workerB", 1);  
-    workerA.start("workerA", 1);   
+#if defined(EXP_SEM)
+    // make EXP=SEM run : inversion de priorité avec un sémaphore binaire.
+    uart.puts("A5 : inversion de priorite, SEMAPHORE BINAIRE\r\n");
+    startPriorityInversionExperiment(console, false);
+#elif defined(EXP_MUTEX)
+    // make EXP=MUTEX run : même scénario avec un mutex (héritage de priorité).
+    uart.puts("A5 : inversion de priorite, MUTEX\r\n");
+    startPriorityInversionExperiment(console, true);
+#else
+    static SampleQueue       rawQueue;       // acquisition -> traitement
+    static SampleQueue       filteredQueue;  // traitement  -> communication
+    static AcquisitionTask   acquisition{rawQueue, console};
+    static ProcessingTask    processing{rawQueue, filteredQueue};
+    static CommunicationTask communication{filteredQueue, console};
+
+    uart.puts("A5 : acquisition -> traitement -> communication\r\n");
+
+    acquisition.start("acq", 3);
+    processing.start("proc", 2);
+    communication.start("comm", 1);
+#endif
 
     vTaskStartScheduler();  // ne retourne jamais
     for (;;) {}

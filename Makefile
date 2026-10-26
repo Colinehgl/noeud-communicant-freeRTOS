@@ -30,7 +30,7 @@ QEMU_TIMEOUT  ?= 5
 
 # Texte que doit afficher le programme sur l'UART pour reussir "make qemu-test"
 # (a adapter a ce que ton programme affiche au demarrage)
-EXPECT_A      ?= Hello
+EXPECT_A ?= [C] v=
 EXPECT_B      ?= Hello
 EXPECT        ?= $(EXPECT_$(PART))
 
@@ -69,6 +69,13 @@ endif
 
 DEFS := -DPART_$(PART)
 
+# Experience A5 : make EXP=SEM run (semaphore binaire) ou make EXP=MUTEX run (mutex).
+# Sans EXP, l'application normale est compilee. Chaque EXP a son propre dossier de build.
+EXP ?=
+ifneq ($(EXP),)
+  DEFS += -DEXP_$(EXP)
+endif
+
 ifeq ($(BUILD),release)
   OPT   ?= -Os
   DEFS  += -DNDEBUG
@@ -78,7 +85,7 @@ else
   $(error BUILD doit valoir debug ou release (recu : "$(BUILD)"))
 endif
 
-OBJ_DIR := build/$(PART)-$(BUILD)
+OBJ_DIR := build/$(PART)-$(BUILD)$(if $(EXP),-$(EXP))
 ELF     := $(OBJ_DIR)/firmware.elf
 BIN     := $(OBJ_DIR)/firmware.bin
 HEX     := $(OBJ_DIR)/firmware.hex
