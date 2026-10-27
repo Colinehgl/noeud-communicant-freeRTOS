@@ -73,8 +73,12 @@ public:
     // Nombre de messages en attente (utile pour observer le remplissage).
     UBaseType_t waiting() const { return uxQueueMessagesWaiting(handle_); }
 
-    // La version pour les interruptions (sendFromIsr) sera ajoutée à l'étape A6.
-
+    // Version pour les ISR : ne bloque jamais. "woken" passe à pdTRUE si une tâche
+    // plus prioritaire que celle interrompue a été réveillée.
+    bool sendFromIsr(const T& v, BaseType_t& woken) {
+        return xQueueSendFromISR(handle_, &v, &woken) == pdTRUE;
+    }
+    
 private:
     uint8_t       storage_[N * sizeof(T)];
     StaticQueue_t control_;

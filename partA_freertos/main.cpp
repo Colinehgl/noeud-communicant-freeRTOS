@@ -4,6 +4,10 @@
 #include "qemu_uart.hpp"
 #include "rtos.hpp"
 #include "task.h"
+#include "rx_isr.hpp"
+#include <array>
+#include "frame.hpp"
+#include "status.hpp"
 
 // ---------------------------------------------------------------------------
 // Le message qui circule dans les queues. Trivial (que des entiers) : copiable
@@ -39,8 +43,6 @@ private:
 
 // ---------------------------------------------------------------------------
 // AcquisitionTask (priorité 3) : "lit" un capteur simulé toutes les 100 ms.
-// Elle ne doit JAMAIS bloquer sur la queue (sinon la période serait faussée) :
-// send avec wait = 0, et si la file est pleine on compte la mesure perdue.
 // ---------------------------------------------------------------------------
 class AcquisitionTask final : public StaticTaskBase<256> {
 public:
@@ -59,9 +61,8 @@ private:
         }
     }
 
-    // Capteur simulé : 25,0 °C plus un bruit pseudo-aléatoire de -0,5 à +0,5 °C.
     int16_t readSensor() {
-        seed_       = seed_ * 1664525U + 1013904223U;  // générateur congruentiel linéaire
+        seed_       = seed_ * 1664525U + 1013904223U;
         const int n = static_cast<int>((seed_ >> 24) % 11U) - 5;
         return static_cast<int16_t>(250 + n);
     }
@@ -74,8 +75,6 @@ private:
 
 // ---------------------------------------------------------------------------
 // ProcessingTask (priorité 2) : filtre chaque mesure reçue, puis la transmet.
-// Elle attend sans limite (portMAX_DELAY) : Bloquée, donc 0 % de processeur
-// tant qu'aucune mesure n'arrive.
 // ---------------------------------------------------------------------------
 class ProcessingTask final : public StaticTaskBase<256> {
 public:
@@ -88,7 +87,7 @@ private:
             Sample s{};
             if (in_.receive(s)) {
                 s.value = avg.push(s.value);
-                (void)out_.send(s);  // bloque si la sortie est pleine : régulation du flux
+                (void)out_.send(s);
             }
         }
     }
@@ -98,59 +97,112 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// CommunicationTask (priorité 1) : affiche les mesures filtrées sur l'UART.
-// (Plus tard : elle les mettra en trames avec CRC, étape A7.)
+// CommunicationTask (priorité 1) : encode et envoie les mesures sous forme de trames binaires.
 // ---------------------------------------------------------------------------
 class CommunicationTask final : public StaticTaskBase<256> {
 public:
-    CommunicationTask(SampleQueue& in, Console& c) : in_(in), console_(c) {}
+    CommunicationTask(SampleQueue& in, QemuUart& uart) : in_(in), uart_(uart) {}
 
 private:
     [[noreturn]] void run() override {
         for (;;) {
             Sample s{};
             if (in_.receive(s)) {
-                console_.line("[C] t=", s.tick);
-                console_.line("[C] v=", static_cast<uint32_t>(s.value));  // valeurs > 0 ici
-                // EXPÉRIENCE (voir explication) : décommente pour ralentir le consommateur.
-                vTaskDelay(pdMS_TO_TICKS(500));
+                // 1. Préparer la charge utile (payload) de la mesure
+                frame::MeasurePayload payload{s.tick, s.value};
+                std::array<uint8_t, frame::kMeasureSize> rawPayload{};
+                frame::packMeasure(payload, rawPayload);
+
+                // 2. Encoder dans une trame complète (SOF + Longueur + Type + Données + CRC)
+                std::array<uint8_t, frame::kMaxFrame> wireBuffer{};
+                const auto encodedLen = frame::encode(
+                    frame::toByte(frame::Type::Measure),
+                    rawPayload.data(),
+                    rawPayload.size(),
+                    wireBuffer.data(),
+                    wireBuffer.size()
+                );
+
+                // 3. Envoyer la trame octet par octet sur l'UART si l'encodage a réussi
+                if (encodedLen.has_value()) {
+                    for (std::size_t i = 0; i < *encodedLen; ++i) {
+                        uart_.putc(wireBuffer[i]);
+                    }
+                }
             }
         }
     }
 
     SampleQueue& in_;
+    QemuUart&    uart_;
+};
+
+// ---------------------------------------------------------------------------
+// RxTask (priorité 2) : consomme les octets reçus par interruption et décode les trames.
+// ---------------------------------------------------------------------------
+class RxTask final : public StaticTaskBase<256> {
+public:
+    RxTask(RxByteQueue& in, QemuUart& uart, Console& c) : in_(in), uart_(uart), console_(c) {}
+
+private:
+    [[noreturn]] void run() override {
+        uart_.enableRxInterrupt();
+        FrameDecoder decoder{50}; // Timeout de 50 ticks
+
+        for (;;) {
+            uint8_t b = 0;
+            if (in_.receive(b)) {
+                // Alimenter le décodeur de trames avec l'octet reçu
+                if (const auto status = decoder.feed(b)) {
+                    if (*status == Status::Ok) {
+                        const auto& f = decoder.lastFrame();
+                        console_.line("[R] Trame valide reçue, type=", f.type);
+                    } else if (*status == Status::BadCrc) {
+                        console_.text("[R] Erreur : CRC invalide !\r\n");
+                    } else if (*status == Status::Overflow) {
+                        console_.text("[R] Erreur : Débordement de trame !\r\n");
+                    }
+                }
+            }
+        }
+    }
+
+    RxByteQueue& in_;
+    QemuUart&    uart_;
     Console&     console_;
 };
 
 int main() {
-    // static : ces objets doivent survivre au démarrage de l'ordonnanceur.
     static QemuUart uart;
-    static Console  console{uart};  // son Mutex est créé ici, avant l'ordonnanceur
+    static Console  console{uart};
 
-    uart.init();
+    uart.init(); // Indispensable pour initialiser le matériel avant tout affichage
 
 #if defined(EXP_SEM)
-    // make EXP=SEM run : inversion de priorité avec un sémaphore binaire.
     uart.puts("A5 : inversion de priorite, SEMAPHORE BINAIRE\r\n");
     startPriorityInversionExperiment(console, false);
 #elif defined(EXP_MUTEX)
-    // make EXP=MUTEX run : même scénario avec un mutex (héritage de priorité).
     uart.puts("A5 : inversion de priorite, MUTEX\r\n");
     startPriorityInversionExperiment(console, true);
 #else
-    static SampleQueue       rawQueue;       // acquisition -> traitement
-    static SampleQueue       filteredQueue;  // traitement  -> communication
+    static SampleQueue       rawQueue;
+    static SampleQueue       filteredQueue;
+    static RxByteQueue       rxBytes;
     static AcquisitionTask   acquisition{rawQueue, console};
     static ProcessingTask    processing{rawQueue, filteredQueue};
-    static CommunicationTask communication{filteredQueue, console};
+    static CommunicationTask communication{filteredQueue, uart};
+    static RxTask            rx{rxBytes, uart, console};
 
-    uart.puts("A5 : acquisition -> traitement -> communication\r\n");
+    uart.puts("A7 : trames binaires avec CRC et reception IRQ\r\n");
+
+    isrAttach(uart, rxBytes);
 
     acquisition.start("acq", 3);
     processing.start("proc", 2);
     communication.start("comm", 1);
+    rx.start("rx", 2);
 #endif
 
-    vTaskStartScheduler();  // ne retourne jamais
+    vTaskStartScheduler();
     for (;;) {}
 }

@@ -33,6 +33,21 @@ public:
         uart_.puts("\r\n");
     }
 
+    // Écrit "<label><c> code=<n>\r\n" d'un seul bloc.
+    // <c> est le caractère s'il est affichable, '.' sinon (Entrée, Échap, etc.).
+    void byteLine(const char* label, uint8_t b) {
+        char digits[11];
+        toDecimal(b, digits);
+        const char shown[2] = {(b >= 32U && b < 127U) ? static_cast<char>(b) : '.', '\0'};
+
+        LockGuard guard(mutex_);
+        uart_.puts(label);
+        uart_.puts(shown);
+        uart_.puts(" code=");
+        uart_.puts(digits);
+        uart_.puts("\r\n");
+    }
+
 private:
     static void toDecimal(uint32_t v, char* out) {  // out : au moins 11 octets
         char     tmp[10];

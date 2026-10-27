@@ -16,6 +16,7 @@ void SVC_Handler(void)        __attribute__((weak, alias("Default_Handler")));
 void DebugMon_Handler(void)   __attribute__((weak, alias("Default_Handler")));
 void PendSV_Handler(void)     __attribute__((weak, alias("Default_Handler")));
 void SysTick_Handler(void)    __attribute__((weak, alias("Default_Handler")));
+void UART0RX_Handler(void)    __attribute__((weak, alias("Default_Handler")));
 
 __attribute__((section(".isr_vector"), used))
 void (* const vector_table[])(void) = {
@@ -32,6 +33,7 @@ void (* const vector_table[])(void) = {
     0,                            /* 13 : réservé */
     PendSV_Handler,               /* 14 */
     SysTick_Handler,              /* 15 */
+    UART0RX_Handler,              /* 16 : IRQ 0 = UART0 RX */
 };
 
 void Reset_Handler(void)
