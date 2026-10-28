@@ -40,6 +40,33 @@ std::optional<MeasurePayload> unpackMeasure(const Frame& f) {
     return MeasurePayload{tick, static_cast<int16_t>(v)};
 }
 
+void packCommand(const CommandPayload& c, std::array<uint8_t, kCommandSize>& out) {
+    out[0] = c.cmdId;
+    out[1] = static_cast<uint8_t>(c.param & 0xFFU);
+    out[2] = static_cast<uint8_t>(c.param >> 8);
+}
+
+std::optional<CommandPayload> unpackCommand(const Frame& f) {
+    if (f.type != toByte(Type::Command) || f.length != kCommandSize) {
+        return std::nullopt;
+    }
+    const uint8_t cmdId = f.data[0];
+    const auto param = static_cast<int16_t>(f.data[1] | (f.data[2] << 8));
+    return CommandPayload{cmdId, param};
+}
+
+void packAck(const AckPayload& a, std::array<uint8_t, kAckSize>& out) {
+    out[0] = a.cmdId;
+    out[1] = a.status;
+}
+
+std::optional<AckPayload> unpackAck(const Frame& f) {
+    if (f.type != toByte(Type::Ack) || f.length != kAckSize) {
+        return std::nullopt;
+    }
+    return AckPayload{f.data[0], f.data[1]};
+}
+
 }  // namespace frame
 
 std::optional<Status> FrameDecoder::feed(uint8_t byte) {

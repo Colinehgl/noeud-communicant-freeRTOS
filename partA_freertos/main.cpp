@@ -138,7 +138,7 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// RxTask (priorité 2) : consomme les octets reçus par interruption et décode les trames.
+// RxTask (priorité 2) : consomme les octets reçus par IRQ, décode et gère les commandes.
 // ---------------------------------------------------------------------------
 class RxTask final : public StaticTaskBase<256> {
 public:
@@ -156,7 +156,31 @@ private:
                 if (const auto status = decoder.feed(b)) {
                     if (*status == Status::Ok) {
                         const auto& f = decoder.lastFrame();
-                        console_.line("[R] Trame valide reçue, type=", f.type);
+                        
+                        // Si c'est une trame de commande reçue
+                        if (f.type == frame::toByte(frame::Type::Command)) {
+                            if (auto cmd = frame::unpackCommand(f)) {
+                                console_.line("[R] Commande reçue ID=", cmd->cmdId);
+
+                                // Préparer et renvoyer un ACK en réponse
+                                frame::AckPayload ack{cmd->cmdId, 0}; // 0 = Succès
+                                std::array<uint8_t, frame::kAckSize> rawAck{};
+                                frame::packAck(ack, rawAck);
+
+                                std::array<uint8_t, frame::kMaxFrame> wireAck{};
+                                if (auto len = frame::encode(
+                                    frame::toByte(frame::Type::Ack),
+                                    rawAck.data(), rawAck.size(),
+                                    wireAck.data(), wireAck.size())) {
+                                    for (std::size_t i = 0; i < *len; ++i) {
+                                        uart_.putc(wireAck[i]);
+                                    }
+                                }
+                            }
+                        } else {
+                            console_.line("[R] Trame valide reçue, type=", f.type);
+                        }
+
                     } else if (*status == Status::BadCrc) {
                         console_.text("[R] Erreur : CRC invalide !\r\n");
                     } else if (*status == Status::Overflow) {
@@ -193,7 +217,7 @@ int main() {
     static CommunicationTask communication{filteredQueue, uart};
     static RxTask            rx{rxBytes, uart, console};
 
-    uart.puts("A7 : trames binaires avec CRC et reception IRQ\r\n");
+    uart.puts("A8 : protocole bidirectionnel, commandes et ACK\r\n");
 
     isrAttach(uart, rxBytes);
 
