@@ -1,14 +1,14 @@
-#include <doctest/doctest.h>
 #include "frame.hpp"
 #include "status.hpp"
 #include <array>
+#include <doctest/doctest.h>
 
 TEST_CASE("Command packaging and unpackaging") {
     frame::CommandPayload original{0x42, 12345};
     std::array<uint8_t, frame::kCommandSize> raw{};
-    
+
     frame::packCommand(original, raw);
-    
+
     frame::Frame f{};
     f.type = frame::toByte(frame::Type::Command);
     f.length = frame::kCommandSize;
@@ -25,9 +25,9 @@ TEST_CASE("Command packaging and unpackaging") {
 TEST_CASE("Ack packaging and unpackaging") {
     frame::AckPayload original{0x42, 0};
     std::array<uint8_t, frame::kAckSize> raw{};
-    
+
     frame::packAck(original, raw);
-    
+
     frame::Frame f{};
     f.type = frame::toByte(frame::Type::Ack);
     f.length = frame::kAckSize;
@@ -48,13 +48,8 @@ TEST_CASE("FrameDecoder with Command frame and CRC") {
 
     // Encoder la trame complète (SOF + Len + Type + Data + CRC)
     std::array<uint8_t, frame::kMaxFrame> wire{};
-    auto encodedLen = frame::encode(
-        frame::toByte(frame::Type::Command),
-        rawCmd.data(),
-        rawCmd.size(),
-        wire.data(),
-        wire.size()
-    );
+    auto encodedLen = frame::encode(frame::toByte(frame::Type::Command), rawCmd.data(),
+                                    rawCmd.size(), wire.data(), wire.size());
     REQUIRE(encodedLen.has_value());
 
     // Alimenter le décodeur octet par octet
@@ -68,7 +63,7 @@ TEST_CASE("FrameDecoder with Command frame and CRC") {
     REQUIRE(status.has_value());
     CHECK(static_cast<int>(*status) == static_cast<int>(Status::Ok));
 
-    const auto& decodedFrame = decoder.lastFrame();
+    const auto &decodedFrame = decoder.lastFrame();
     CHECK(decodedFrame.type == frame::toByte(frame::Type::Command));
 
     auto unpackedCmd = frame::unpackCommand(decodedFrame);

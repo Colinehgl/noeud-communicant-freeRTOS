@@ -7,45 +7,48 @@ void Reset_Handler(void);
 void Default_Handler(void);
 
 /*exceptions*/
-void NMI_Handler(void)        __attribute__((weak, alias("Default_Handler")));
-void HardFault_Handler(void)  __attribute__((weak, alias("Default_Handler")));
-void MemManage_Handler(void)  __attribute__((weak, alias("Default_Handler")));
-void BusFault_Handler(void)   __attribute__((weak, alias("Default_Handler")));
+void NMI_Handler(void) __attribute__((weak, alias("Default_Handler")));
+void HardFault_Handler(void) __attribute__((weak, alias("Default_Handler")));
+void MemManage_Handler(void) __attribute__((weak, alias("Default_Handler")));
+void BusFault_Handler(void) __attribute__((weak, alias("Default_Handler")));
 void UsageFault_Handler(void) __attribute__((weak, alias("Default_Handler")));
-void SVC_Handler(void)        __attribute__((weak, alias("Default_Handler")));
-void DebugMon_Handler(void)   __attribute__((weak, alias("Default_Handler")));
-void PendSV_Handler(void)     __attribute__((weak, alias("Default_Handler")));
-void SysTick_Handler(void)    __attribute__((weak, alias("Default_Handler")));
-void UART0RX_Handler(void)    __attribute__((weak, alias("Default_Handler")));
+void SVC_Handler(void) __attribute__((weak, alias("Default_Handler")));
+void DebugMon_Handler(void) __attribute__((weak, alias("Default_Handler")));
+void PendSV_Handler(void) __attribute__((weak, alias("Default_Handler")));
+void SysTick_Handler(void) __attribute__((weak, alias("Default_Handler")));
+void UART0RX_Handler(void) __attribute__((weak, alias("Default_Handler")));
 
-__attribute__((section(".isr_vector"), used))
-void (* const vector_table[])(void) = {
-    (void (*)(void))(&_estack),   /* 0 : SP initial */
-    Reset_Handler,                /* 1 */
-    NMI_Handler,                  /* 2 */
-    HardFault_Handler,            /* 3 */
-    MemManage_Handler,            /* 4 */
-    BusFault_Handler,             /* 5 */
-    UsageFault_Handler,           /* 6 */
-    0, 0, 0, 0,                   /* 7-10 : réservés */
-    SVC_Handler,                  /* 11 */
-    DebugMon_Handler,             /* 12 */
-    0,                            /* 13 : réservé */
-    PendSV_Handler,               /* 14 */
-    SysTick_Handler,              /* 15 */
-    UART0RX_Handler,              /* 16 : IRQ 0 = UART0 RX */
+__attribute__((section(".isr_vector"), used)) void (*const vector_table[])(void) = {
+    (void (*)(void))(&_estack), /* 0 : SP initial */
+    Reset_Handler,              /* 1 */
+    NMI_Handler,                /* 2 */
+    HardFault_Handler,          /* 3 */
+    MemManage_Handler,          /* 4 */
+    BusFault_Handler,           /* 5 */
+    UsageFault_Handler,         /* 6 */
+    0,
+    0,
+    0,
+    0,                /* 7-10 : réservés */
+    SVC_Handler,      /* 11 */
+    DebugMon_Handler, /* 12 */
+    0,                /* 13 : réservé */
+    PendSV_Handler,   /* 14 */
+    SysTick_Handler,  /* 15 */
+    UART0RX_Handler,  /* 16 : IRQ 0 = UART0 RX */
 };
 
-void Reset_Handler(void)
-{
+void Reset_Handler(void) {
     /* 1. Copier .data de la Flash vers la RAM */
-    uint32_t *src = &_sidata;
+    const uint32_t *src = &_sidata;
     uint32_t *dst = &_sdata;
+    // cppcheck-suppress comparePointers
     while (dst < &_edata) {
         *dst++ = *src++;
     }
 
     /* 2. Mettre .bss à zéro */
+    // cppcheck-suppress comparePointers
     for (dst = &_sbss; dst < &_ebss; dst++) {
         *dst = 0;
     }
@@ -53,10 +56,11 @@ void Reset_Handler(void)
     /* 3. Lancer le programme */
     main();
 
-    for (;;) {}
+    for (;;) {
+    }
 }
 
-void Default_Handler(void)
-{
-    for (;;) {}   /* on s'arrête, visible avec GDB (Ctrl C) */
+void Default_Handler(void) {
+    for (;;) {
+    } /* on s'arrête, visible avec GDB (Ctrl C) */
 }

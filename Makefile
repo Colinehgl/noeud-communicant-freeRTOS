@@ -30,7 +30,7 @@ QEMU_TIMEOUT  ?= 5
 
 # Texte que doit afficher le programme sur l'UART pour reussir "make qemu-test"
 # (a adapter a ce que ton programme affiche au demarrage)
-EXPECT_A ?= [C] v=
+EXPECT_A ?= A8 : protocole bidirectionnel
 EXPECT_B      ?= Hello
 EXPECT        ?= $(EXPECT_$(PART))
 
@@ -185,9 +185,13 @@ $(OBJ_DIR)/%.o: %.S
 -include $(DEPS)
 
 .PHONY: all-parts
-all-parts: ## Compile la partie A puis la partie B
+all-parts: ## Compile la partie A, puis la partie B si partB_minirtos/ existe
 	$(MAKE) PART=A all
-	$(MAKE) PART=B all
+	@if [ -d partB_minirtos ] && [ -f partB_minirtos/linker.ld ]; then \
+	    $(MAKE) PART=B all; \
+	else \
+	    echo "  SKIP  partie B (partB_minirtos/linker.ld absent)"; \
+	fi
 
 # =============================================================================
 ##@ Execution et debug (QEMU + GDB)
@@ -212,9 +216,13 @@ qemu-test: $(ELF) ## Test automatique : l'UART doit afficher EXPECT avant QEMU_T
 	    echo "  FAIL  '$(EXPECT)' absent. Sortie UART :"; cat $(LOG) 2>/dev/null; exit 1; \
 	fi
 
-qemu-test-all: ## qemu-test pour la partie A puis la partie B
+qemu-test-all: ## qemu-test pour la partie A, puis la partie B si elle existe
 	$(MAKE) PART=A qemu-test
-	$(MAKE) PART=B qemu-test
+	@if [ -d partB_minirtos ] && [ -f partB_minirtos/linker.ld ]; then \
+	    $(MAKE) PART=B qemu-test; \
+	else \
+	    echo "  SKIP  partie B (partB_minirtos/linker.ld absent)"; \
+	fi
 
 qemu-gdb: $(ELF) ## Terminal 1 : QEMU en pause, attend GDB sur le port GDB_PORT
 	$(QEMU) $(QEMU_BASE) -nographic -S -gdb tcp::$(GDB_PORT)

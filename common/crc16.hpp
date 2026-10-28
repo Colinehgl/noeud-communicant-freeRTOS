@@ -32,7 +32,7 @@ constexpr uint16_t update(uint16_t crc, uint8_t byte) {
 }
 
 // CRC d'un bloc d'octets. "crc" permet de poursuivre un calcul commence avant.
-constexpr uint16_t compute(const uint8_t* data, std::size_t len, uint16_t crc = kInit) {
+constexpr uint16_t compute(const uint8_t *data, std::size_t len, uint16_t crc = kInit) {
     for (std::size_t i = 0; i < len; ++i) {
         crc = update(crc, data[i]);
     }
@@ -48,4 +48,4 @@ static_assert(kTable[0] == 0x0000 && kTable[1] == 0x1021 && kTable[255] == 0x1EF
 static_assert(compute(detail::kCheck, sizeof detail::kCheck) == 0x29B1,
               "CRC-16/CCITT-FALSE de \"123456789\" doit valoir 0x29B1");
 
-}  // namespace crc16
+} // namespace crc16

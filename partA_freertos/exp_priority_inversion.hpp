@@ -5,4 +5,4 @@
 // Ne démarre PAS l'ordonnanceur : main() appelle vTaskStartScheduler() ensuite.
 //   useMutex = false : verrou = sémaphore binaire (pas d'héritage -> inversion visible)
 //   useMutex = true  : verrou = Mutex FreeRTOS (héritage de priorité -> inversion corrigée)
-void startPriorityInversionExperiment(Console& console, bool useMutex);
+void startPriorityInversionExperiment(Console &console, bool useMutex);
